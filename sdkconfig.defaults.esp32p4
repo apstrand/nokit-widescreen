@@ -1,0 +1,31 @@
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# ---- Boot-time / performance optimisations ----
+
+# PSRAM memtest takes ~1 s at 32 MB; skip it
+CONFIG_SPIRAM_MEMTEST=n
+
+# Flash mode DIO → QIO: ~2× flash read throughput (code cache + binary load)
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# Bootloader log verbosity INFO → WARN: less serial output during boot
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+
+# Skip CRC/hash validation of the app image on every power-on reset
+CONFIG_BOOTLOADER_SKIP_VALIDATE_ON_POWER_ON=y
+
+# Compiler optimisation: debug (-Og) → performance (-O2)
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Console UART: 115200 → 921600 baud (faster log output)
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+
+# Skip RTC slow-clock calibration (no deep sleep, minor accuracy impact)
+CONFIG_RTC_CLK_CAL_CYCLES=0
+
+# L2 cache: 128 KB → 256 KB (fewer flash-cache misses at runtime)
+CONFIG_CACHE_L2_CACHE_256KB=y
