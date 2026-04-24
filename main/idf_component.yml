@@ -1,4 +1,6 @@
 dependencies:
-  idf: ">=5.3"
-  waveshare/esp_lcd_dsi: "*"
-  espressif/esp_lcd_touch_gt911: "^1"
+  idf: '>=5.3'
+  espressif/esp_lcd_touch_gt911: ^1
+  esp_lcd_dsi:
+    git: https://github.com/apstrand/fork-waveshare-esp32-components
+    path: display/lcd/esp_lcd_dsi
