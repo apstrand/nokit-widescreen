@@ -12,6 +12,8 @@
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_dsi.h"
+#include "driver/i2c_master.h"
+#include "esp_lcd_touch_gt911.h"
 #include "font.h"
 
 static const char *TAG = "widescreen";
@@ -21,6 +23,8 @@ static const char *TAG = "widescreen";
 
 #define LCD_BL_GPIO     GPIO_NUM_26
 #define LCD_RST_GPIO    GPIO_NUM_27
+
+#define TOUCH_RST_GPIO  GPIO_NUM_23
 
 #define MIPI_DSI_PHY_LDO_CHAN   3
 #define MIPI_DSI_PHY_LDO_MV     2500
@@ -63,6 +67,11 @@ static void backlight_init(void)
 
 static void fb_fill_rect(uint16_t *fb, int x, int y, int w, int h, uint16_t color)
 {
+    if (x < 0)             { w += x; x = 0; }
+    if (y < 0)             { h += y; y = 0; }
+    if (x + w > LCD_H_RES) { w = LCD_H_RES - x; }
+    if (y + h > LCD_V_RES) { h = LCD_V_RES - y; }
+    if (w <= 0 || h <= 0)  return;
     for (int row = y; row < y + h; row++) {
         uint16_t *p = fb + row * LCD_H_RES + x;
         for (int col = 0; col < w; col++) {
@@ -99,6 +108,85 @@ static void fb_draw_string(uint16_t *fb, int x, int y, const char *s, int scale,
 {
     for (; *s; s++, x += 8 * scale)
         fb_draw_char(fb, x, y, *s, scale, fg, bg);
+}
+
+#define TOUCH_MARKER_R  24  // half-size of touch crosshair
+
+static void fb_draw_touch_marker(uint16_t *fb, int cx, int cy, uint16_t color)
+{
+    fb_fill_rect(fb, cx - TOUCH_MARKER_R, cy - 2, TOUCH_MARKER_R * 2, 4, color);
+    fb_fill_rect(fb, cx - 2, cy - TOUCH_MARKER_R, 4, TOUCH_MARKER_R * 2, color);
+}
+
+static uint16_t s_touch_x_native;
+static uint16_t s_touch_y_native;
+
+static void touch_scale_coords(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y,
+                                uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
+{
+    for (int i = 0; i < *point_num; i++) {
+        uint16_t xs = (uint32_t)x[i] * LCD_H_RES / s_touch_x_native;
+        x[i] = (LCD_H_RES - 1) - xs;
+        uint16_t ys = (uint32_t)y[i] * LCD_V_RES / s_touch_y_native;
+        y[i] = (LCD_V_RES - 1) - ys;
+    }
+}
+
+static esp_lcd_touch_handle_t touch_init(void)
+{
+    // Waveshare DSI component already owns I2C_NUM_1; reuse its bus handle.
+    i2c_master_bus_handle_t i2c_bus;
+    ESP_ERROR_CHECK(i2c_master_get_bus_handle(I2C_NUM_1, &i2c_bus));
+
+    // Pulse RST and wait for GT911 to boot (driver only waits 10 ms; chip needs ≥200 ms).
+    gpio_set_direction(TOUCH_RST_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(TOUCH_RST_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(TOUCH_RST_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // Probe both GT911 addresses; INT is NC so we can't drive it during reset.
+    uint32_t gt911_addr = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS;  // 0x5D
+    if (i2c_master_probe(i2c_bus, gt911_addr, 50) != ESP_OK) {
+        gt911_addr = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS_BACKUP; // 0x14
+        ESP_LOGI(TAG, "GT911 not at 0x5D, trying 0x14");
+    }
+
+    // Read GT911 native touch resolution from config registers 0x8048–0x804B.
+    // We need this to scale raw coordinates to panel pixels.
+    {
+        i2c_master_dev_handle_t dev;
+        i2c_device_config_t dev_cfg = {
+            .device_address = gt911_addr,
+            .scl_speed_hz   = 400000,
+        };
+        ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus, &dev_cfg, &dev));
+
+        uint8_t reg[2] = {0x80, 0x48};
+        uint8_t buf[4] = {0};
+        ESP_ERROR_CHECK(i2c_master_transmit_receive(dev, reg, 2, buf, 4, 100));
+        i2c_master_bus_rm_device(dev);
+
+        s_touch_x_native = (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+        s_touch_y_native = (uint16_t)buf[2] | ((uint16_t)buf[3] << 8);
+        ESP_LOGI(TAG, "GT911 native res: %"PRIu16"x%"PRIu16, s_touch_x_native, s_touch_y_native);
+    }
+
+    esp_lcd_panel_io_handle_t tp_io;
+    esp_lcd_panel_io_i2c_config_t tp_io_cfg = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
+    tp_io_cfg.dev_addr = gt911_addr;
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus, &tp_io_cfg, &tp_io));
+
+    esp_lcd_touch_config_t tp_cfg = {
+        .x_max               = LCD_H_RES,
+        .y_max               = LCD_V_RES,
+        .rst_gpio_num        = GPIO_NUM_NC,
+        .int_gpio_num        = GPIO_NUM_NC,
+        .process_coordinates = touch_scale_coords,
+    };
+    esp_lcd_touch_handle_t tp;
+    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(tp_io, &tp_cfg, &tp));
+    return tp;
 }
 
 void app_main(void)
@@ -140,6 +228,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(panel, 1, (void **)&fb));
 
     backlight_init();
+    esp_lcd_touch_handle_t tp = touch_init();
     ESP_LOGI(TAG, "Starting animation");
 
     // Bouncing rectangle: 300x150, cycling through colours on each bounce.
@@ -161,12 +250,35 @@ void app_main(void)
     const int OVL_W = 10 * 8 * OVL_SCALE, OVL_H = 8 * OVL_SCALE;
     char fps_str[32] = "FPS: ---";
 
+    // Previous touch positions so we can erase them next frame
+    uint16_t prev_tx[5] = {0}, prev_ty[5] = {0};
+    uint8_t  prev_ntouch = 0;
+
     while (1) {
-        // Erase previous rect, move, draw new rect.
+        // Read touch before moving the box so position is current this frame.
+        uint16_t tx[5], ty[5];
+        uint8_t ntouch = 0;
+        esp_lcd_touch_read_data(tp);
+        esp_lcd_touch_get_coordinates(tp, tx, ty, NULL, &ntouch, 5);
+
+        if (prev_ntouch == 0 && ntouch > 0)
+            ESP_LOGI(TAG, "Touch down  (%"PRIu16", %"PRIu16")", tx[0], ty[0]);
+        else if (prev_ntouch > 0 && ntouch == 0)
+            ESP_LOGI(TAG, "Touch up");
+        else if (ntouch > 0)
+            ESP_LOGI(TAG, "Touch move  (%"PRIu16", %"PRIu16")", tx[0], ty[0]);
+
+        // Erase previous rect.
         fb_fill_rect(fb, rx, ry, rw, rh, COLOR_BLACK);
 
-        rx += vx;
-        ry += vy;
+        if (ntouch > 0) {
+            // Center box on first touch point.
+            rx = (int)tx[0] - rw / 2;
+            ry = (int)ty[0] - rh / 2;
+        } else {
+            rx += vx;
+            ry += vy;
+        }
 
         bool bounced = false;
         if (rx <= 0)             { rx = 0;              vx = -vx; bounced = true; }
@@ -174,15 +286,26 @@ void app_main(void)
         if (ry <= 0)             { ry = 0;              vy = -vy; bounced = true; }
         if (ry + rh >= LCD_V_RES){ ry = LCD_V_RES - rh; vy = -vy; bounced = true; }
 
-        if (bounced) {
+        // Only cycle colour on a real free-running bounce, not an edge clamp from touch.
+        if (bounced && ntouch == 0) {
             color_idx = (color_idx + 1) % ncolors;
         }
 
         fb_fill_rect(fb, rx, ry, rw, rh, colors[color_idx]);
 
-        // Redraw FPS overlay every frame (cheap — only 160 px tall strip).
+        // Redraw FPS overlay every frame.
         fb_fill_rect(fb, OVL_X, OVL_Y, OVL_W, OVL_H, COLOR_BLACK);
         fb_draw_string(fb, OVL_X, OVL_Y, fps_str, OVL_SCALE, COLOR_WHITE, COLOR_BLACK);
+
+        // Erase previous touch markers, draw current ones.
+        for (int i = 0; i < prev_ntouch; i++)
+            fb_draw_touch_marker(fb, prev_tx[i], prev_ty[i], COLOR_BLACK);
+        for (int i = 0; i < ntouch; i++) {
+            fb_draw_touch_marker(fb, tx[i], ty[i], COLOR_YELLOW);
+            prev_tx[i] = tx[i];
+            prev_ty[i] = ty[i];
+        }
+        prev_ntouch = ntouch;
 
         ESP_ERROR_CHECK(esp_cache_msync(fb, FB_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M));
 
