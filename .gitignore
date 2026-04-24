@@ -1,0 +1,6 @@
+build
+managed_components
+.claude
+sdkconfig
+sdkconfig.old
+dependencies.lock
