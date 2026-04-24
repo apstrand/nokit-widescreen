@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -11,6 +12,7 @@
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_dsi.h"
+#include "font.h"
 
 static const char *TAG = "widescreen";
 
@@ -69,6 +71,36 @@ static void fb_fill_rect(uint16_t *fb, int x, int y, int w, int h, uint16_t colo
     }
 }
 
+// Draw a single character at (x,y) scaled by `scale`, clipped to framebuffer.
+static void fb_draw_char(uint16_t *fb, int x, int y, char ch, int scale,
+                         uint16_t fg, uint16_t bg)
+{
+    if (ch < 0x20 || ch > 0x7E) ch = '?';
+    const uint8_t *glyph = font8x8[(uint8_t)(ch - 0x20)];
+    for (int row = 0; row < 8; row++) {
+        uint8_t bits = glyph[row];
+        for (int col = 0; col < 8; col++) {
+            uint16_t color = (bits >> col) & 1 ? fg : bg;
+            for (int sy = 0; sy < scale; sy++) {
+                int py = y + row * scale + sy;
+                if (py < 0 || py >= LCD_V_RES) continue;
+                for (int sx = 0; sx < scale; sx++) {
+                    int px = x + col * scale + sx;
+                    if (px < 0 || px >= LCD_H_RES) continue;
+                    fb[py * LCD_H_RES + px] = color;
+                }
+            }
+        }
+    }
+}
+
+static void fb_draw_string(uint16_t *fb, int x, int y, const char *s, int scale,
+                            uint16_t fg, uint16_t bg)
+{
+    for (; *s; s++, x += 8 * scale)
+        fb_draw_char(fb, x, y, *s, scale, fg, bg);
+}
+
 void app_main(void)
 {
     esp_ldo_channel_handle_t ldo_mipi_phy = NULL;
@@ -124,6 +156,11 @@ void app_main(void)
     uint32_t frame_count = 0;
     int64_t fps_window_start = esp_timer_get_time();
 
+    // FPS overlay: 2× scaled, top-left corner, max "FPS: 999.9" = 10 chars × 16px
+    const int OVL_X = 4, OVL_Y = 4, OVL_SCALE = 2;
+    const int OVL_W = 10 * 8 * OVL_SCALE, OVL_H = 8 * OVL_SCALE;
+    char fps_str[32] = "FPS: ---";
+
     while (1) {
         // Erase previous rect, move, draw new rect.
         fb_fill_rect(fb, rx, ry, rw, rh, COLOR_BLACK);
@@ -142,13 +179,24 @@ void app_main(void)
         }
 
         fb_fill_rect(fb, rx, ry, rw, rh, colors[color_idx]);
+
+        // Redraw FPS overlay every frame (cheap — only 160 px tall strip).
+        fb_fill_rect(fb, OVL_X, OVL_Y, OVL_W, OVL_H, COLOR_BLACK);
+        fb_draw_string(fb, OVL_X, OVL_Y, fps_str, OVL_SCALE, COLOR_WHITE, COLOR_BLACK);
+
         ESP_ERROR_CHECK(esp_cache_msync(fb, FB_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M));
 
-        frame_count++;
+        // esp_cache_msync holds a critical section for ~2ms, so taskYIELD() isn't
+        // enough — app_main is always ready and gets immediately rescheduled.
+        // Block for one tick every 100 frames so IDLE0 can run and reset the WDT.
+        if (++frame_count % 100 == 0) {
+            vTaskDelay(1);
+        }
         int64_t now = esp_timer_get_time();
         if (now - fps_window_start >= 1000000) {
             float fps = frame_count * 1e6f / (now - fps_window_start);
-            ESP_LOGI(TAG, "FPS: %.1f", fps);
+            snprintf(fps_str, sizeof(fps_str), "FPS: %.1f", fps);
+            ESP_LOGI(TAG, "%s", fps_str);
             frame_count = 0;
             fps_window_start = now;
         }
