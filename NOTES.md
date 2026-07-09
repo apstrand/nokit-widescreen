@@ -8,6 +8,7 @@ Display: https://www.waveshare.com/6.25inch-dsi-lcd.htm?srsltid=AfmBOoodj1cXJ192
    wiki: https://www.waveshare.com/wiki/6.25inch_DSI_LCD
 
 Board: https://www.olimex.com/Products/IoT/ESP32-P4/ESP32-P4-DevKit/open-source-hardware
+Alt board: https://docs.waveshare.com/ESP32-P4-WIFI6
 
 
 ## Fix waveshare esp_lcd_dsi.c
