@@ -1,0 +1,31 @@
+menu "Nokit widescreen hardware"
+
+choice NOKIT_BOARD
+    prompt "Carrier board"
+    default NOKIT_BOARD_OLIMEX_P4_DEVKIT
+    help
+        Which ESP32-P4 board the DSI panel is plugged into.
+
+    config NOKIT_BOARD_OLIMEX_P4_DEVKIT
+        bool "Olimex ESP32-P4-DevKit"
+
+    config NOKIT_BOARD_WAVESHARE_P4_WIFI6
+        bool "Waveshare ESP32-P4-WIFI6 (ex ESP32-P4-NANO)"
+endchoice
+
+choice NOKIT_DISPLAY
+    prompt "DSI panel"
+    default NOKIT_DISPLAY_WS_6_25
+    help
+        Which Waveshare DSI panel is on the 15-pin FPC. Both panels are
+        Raspberry-Pi-style DSI displays driven through the on-panel bridge that
+        the esp_lcd_dsi component sets up over I2C (address 0x45).
+
+    config NOKIT_DISPLAY_WS_6_25
+        bool "Waveshare 6.25inch DSI LCD (720x1560)"
+
+    config NOKIT_DISPLAY_WS_QLED_4_3
+        bool "Waveshare 4.3inch DSI QLED (800x480)"
+endchoice
+
+endmenu

@@ -1,6 +1,10 @@
 dependencies:
   idf: '>=5.3'
+  # 6.25inch DSI LCD (and the other Waveshare-architecture panels)
   espressif/esp_lcd_touch_gt911: ^1
   esp_lcd_dsi:
-    git: https://github.com/apstrand/fork-waveshare-esp32-components
-    path: display/lcd/esp_lcd_dsi
+#    git: https://github.com/apstrand/fork-waveshare-esp32-components
+#    path: display/lcd/esp_lcd_dsi
+    override_path: "../../fork-waveshare-esp32-components/display/lcd/esp_lcd_dsi"
+  # 4.3inch DSI QLED (Raspberry Pi panel architecture)
+  espressif/esp_lcd_touch_ft5x06: ^1
